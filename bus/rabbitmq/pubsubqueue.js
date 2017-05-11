@@ -3,13 +3,13 @@ var extend = require('extend');
 var newId = require('node-uuid').v4;
 var util = require('util');
 
-function PubSubQueue(options) {
+function PubSubQueue (options) {
   options = options || {};
   var exchangeOptions = options.exchangeOptions || {};
   var queueOptions = options.queueOptions || {};
 
   extend(queueOptions, {
-    autoDelete: !(options.ack || options.acknowledge),
+    autoDelete: options.autoDelete || ! (options.ack || options.acknowledge),
     contentType: options.contentType || 'application/json',
     durable: Boolean(options.ack || options.acknowledge),
     exclusive: options.exclusive || false,
@@ -53,29 +53,44 @@ function PubSubQueue(options) {
   this.setMaxListeners(Infinity);
 }
 
-PubSubQueue.prototype.publish = function publish(event, options) {
+util.inherits(PubSubQueue, events.EventEmitter);
+
+PubSubQueue.prototype.publish = function publish (event, options, cb) {
   options = options || {};
   var self = this;
 
   options.contentType = options.contentType || this.contentType;
-  options.formatter.serialize(event, function (err, content) {
-    if (err) return null;
-    self.sendChannel.publish(self.exchangeName, self.routingKey || self.queueName, new Buffer(content), options);
-  });
+
+  var channel = cb ? self.confirmChannel : self.sendChannel;
+
+  channel.publish(self.exchangeName, self.routingKey || self.queueName, new Buffer(options.formatter.serialize(event)), options, cb);
+
 };
 
-PubSubQueue.prototype.subscribe = function subscribe(options, callback) {
+PubSubQueue.prototype.subscribe = function subscribe (options, callback) {
   var self = this;
   var subscribed = false;
   var subscription = null;
 
   this.log('subscribing to queue %j with routingKey %j', this.queueName, this.routingKey);
 
-  function _unsubscribe(cb) {
-    self.listenChannel.cancel(self.subscription.consumerTag, cb);
+  function _unsubscribe (cb) {
+    if (subscribed) {
+      // should we prevent multiple cancel calls?
+      self.listenChannel
+        .cancel(subscription.consumerTag)
+        .then(function () {
+          self.emit('unlistened');
+          if (cb) {
+            cb();
+          }
+        });
+    } else {
+      self.on('subscribed', _unsubscribe.bind(this, cb));
+    }
   }
 
-  function _subscribe(uniqueName) {
+  function _subscribe (uniqueName) {
     self.listenChannel.consume(uniqueName, function (message) {
       /*
           Note from http://www.squaremobius.net/amqp.node/doc/channel_api.html
@@ -87,28 +102,24 @@ PubSubQueue.prototype.subscribe = function subscribe(options, callback) {
         return;
       }
       // todo: map contentType to default formatters
-      options.formatter.deserialize(message.content, function (err, content) {
-
-        message.content = { error: err };
-        options.queueType = 'pubsubqueue';
-
-        self.bus.handleIncoming(self.listenChannel, message, options, function (channel, message, options) {
-          // amqplib intercepts errors and closes connections before bubbling up
-          // to domain error handlers when they occur non-asynchronously within
-          // callback. Therefore, if there is a process domain, we try-catch to
-          // redirect the error, assuming the domain creator's intentions.
-          try {
-            callback(message.content, message);
-          } catch (err) {
-            if (process.domain && process.domain.listeners('error')) {
-              process.domain.emit('error', err);
-            } else {
-              self.emit('error', err);
-            }
+      message.content = options.formatter.deserialize(message.content);
+      options.queueType = 'pubsubqueue';
+      self.bus.handleIncoming(self.listenChannel, message, options, function (channel, message, options) {
+        // amqplib intercepts errors and closes connections before bubbling up
+        // to domain error handlers when they occur non-asynchronously within
+        // callback. Therefore, if there is a process domain, we try-catch to
+        // redirect the error, assuming the domain creator's intentions.
+        try {
+          callback(message.content, message);
+        } catch (err) {
+          if (process.domain && process.domain.listeners('error')) {
+            process.domain.emit('error', err);
+          } else {
+            self.emit('error', err);
           }
-        });
+        }
       });
-    }, { noAck: !self.ack })
+    }, { noAck: ! self.ack })
       .then(function (ok) {
         subscribed = true;
         subscription = { consumerTag: ok.consumerTag };
@@ -124,10 +135,13 @@ PubSubQueue.prototype.subscribe = function subscribe(options, callback) {
       }).then(function () {
         if (self.ack) {
           self.log('asserting error queue ' + self.errorQueueName);
-          self.listenChannel.assertQueue(self.errorQueueName, self.queueOptions)
-            .then(function (_qok) {
-              _subscribe(uniqueName);
-            });
+          var errorQueueOptions = extend(self.queueOptions, {
+            autoDelete: options.autoDeleteErrorQueue || false
+          });
+          self.listenChannel.assertQueue(self.errorQueueName, errorQueueOptions)
+          .then(function (_qok) {
+            _subscribe(uniqueName);
+          });
         } else {
           _subscribe(uniqueName);
         }
