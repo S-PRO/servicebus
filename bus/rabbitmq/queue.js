@@ -150,7 +150,7 @@ Queue.prototype.send = function send(event, options) {
   options.formatter.serialize(event, function (err, content) {
     if (err) return null;
 
-    this.sendChannel.sendToQueue(this.routingKey || this.queueName, new Buffer(content), options);
+    self.sendChannel.sendToQueue(self.routingKey || self.queueName, new Buffer(content), options);
   });
 
 };
