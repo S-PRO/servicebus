@@ -2,12 +2,12 @@ var EventEmitter = require('events').EventEmitter;
 var extend = require('extend');
 var util = require('util');
 
-function Queue (options) {
+function Queue(options) {
   options = options || {};
   var queueOptions = options.queueOptions || {};
 
   extend(queueOptions, {
-    autoDelete: options.autoDelete || ! (options.ack || options.acknowledge),
+    autoDelete: !(options.ack || options.acknowledge),
     contentType: options.contentType || 'application/json',
     durable: Boolean(options.ack || options.acknowledge),
     exclusive: options.exclusive || false,
@@ -39,44 +39,36 @@ function Queue (options) {
 
   this.log('asserting queue %s', this.queueName);
 
-  if ( ! this.assertQueue) {
-    self.initialized = true;
-    self.emit('ready');
-  } else {
-    this.listenChannel.assertQueue(this.queueName, this.queueOptions).then(function (_qok) {
-      if (self.ack) {
-        self.log('asserting error queue %s', self.errorQueueName);
-        var errorQueueOptions = extend(self.queueOptions, {
-          autoDelete: options.autoDeleteErrorQueue || false
-        });
-        self.listenChannel.assertQueue(self.errorQueueName, self.queueOptions)
+  this.listenChannel.assertQueue(this.queueName, this.queueOptions).then(function (_qok) {
+    if (self.ack) {
+      self.log('asserting error queue %s', self.errorQueueName);
+      self.listenChannel.assertQueue(self.errorQueueName, self.queueOptions)
         .then(function (_qok) {
           self.initialized = true;
           self.emit('ready');
         });
-      } else {
-        self.initialized = true;
-        self.emit('ready');
-      }
-    }).catch(function (err) {
-      self.log('error connecting to queue %s. error: %s', options.queueName, err.toString());
-      self.emit('error', err);
-    });
-  }
+    } else {
+      self.initialized = true;
+      self.emit('ready');
+    }
+  }).catch(function (err) {
+    self.log('error connecting to queue %s. error: %s', options.queueName, err.toString());
+    self.emit('error', err);
+  });
 
 }
 
 util.inherits(Queue, EventEmitter);
 
-Queue.prototype.listen = function listen (callback, options) {
+Queue.prototype.listen = function listen(callback, options) {
   options = options || {};
   queueOptions = options.queueOptions || {};
 
   var self = this;
 
-  this.log('listening to queue %j', this.queueName);
+  this.log('listening to queue %s', this.queueName);
 
-  if ( ! this.initialized) {
+  if (!this.initialized) {
     return this.on('ready', listen.bind(this, callback, options));
   }
 
@@ -90,24 +82,28 @@ Queue.prototype.listen = function listen (callback, options) {
     if (message === null) {
       return;
     }
-    message.content = options.formatter.deserialize(message.content);
-    options.queueType = 'queue';
-    self.bus.handleIncoming(self.listenChannel, message, options, function (channel, message, options) {
-      // amqplib intercepts errors and closes connections before bubbling up
-      // to domain error handlers when they occur non-asynchronously within
-      // callback. Therefore, if there is a process domain, we try-catch to
-      // redirect the error, assuming the domain creator's intentions.
-      try {
-        callback(message.content, message);
-      } catch (err) {
-        if (process.domain && process.domain.listeners('error')) {
-          process.domain.emit('error', err);
-        } else {
-          self.emit('error', err);
+    options.formatter.deserialize(message.content, function (err, content) {
+
+      message.content = { error: err };
+      options.queueType = 'queue';
+
+      self.bus.handleIncoming(self.listenChannel, message, options, function (channel, message, options) {
+        // amqplib intercepts errors and closes connections before bubbling up
+        // to domain error handlers when they occur non-asynchronously within
+        // callback. Therefore, if there is a process domain, we try-catch to
+        // redirect the error, assuming the domain creator's intentions.
+        try {
+          callback(message.content, message);
+        } catch (err) {
+          if (process.domain && process.domain.listeners('error')) {
+            process.domain.emit('error', err);
+          } else {
+            self.emit('error', err);
+          }
         }
-      }
+      });
     });
-  }, { noAck: ! self.ack })
+  }, { noAck: !self.ack })
     .then(function (ok) {
       self.listening = true;
       self.subscription = { consumerTag: ok.consumerTag };
@@ -116,7 +112,7 @@ Queue.prototype.listen = function listen (callback, options) {
 
 };
 
-Queue.prototype.destroy = function destroy (options) {
+Queue.prototype.destroy = function destroy(options) {
   options = options || {};
   var em = new EventEmitter();
   this.log('deleting queue %s', this.queueName);
@@ -130,18 +126,16 @@ Queue.prototype.destroy = function destroy (options) {
   return em;
 };
 
-Queue.prototype.unlisten = function unlisten () {
+Queue.prototype.unlisten = function unlisten() {
   var em = new EventEmitter();
   var self = this;
 
   if (this.listening) {
     this.listenChannel.cancel(this.subscription.consumerTag)
       .then(function (err, ok) {
-      delete self.subscription;
-      self.listening = false;
-      self.bus.emit('unlistened', self);
-      em.emit('success');
-    });
+        delete self.subscription;
+        em.emit('success');
+      });
   } else {
     this.on('listening', unlisten.bind(this));
   }
@@ -149,20 +143,22 @@ Queue.prototype.unlisten = function unlisten () {
   return em;
 };
 
-Queue.prototype.send = function send (event, options, cb) {
+Queue.prototype.send = function send(event, options) {
   options = options || {};
   var self = this;
 
-  if ( ! this.initialized) {
-    return this.on('ready', send.bind(this, event, options, cb));
+  if (!this.initialized) {
+    return this.on('ready', send.bind(this, event, options));
   }
 
   options.contentType = options.contentType || this.contentType;
   options.persistent = Boolean(options.ack || options.acknowledge || options.persistent || self.ack);
 
-  var channel = cb ? this.confirmChannel : this.sendChannel;
+  options.formatter.serialize(event, function (err, content) {
+    if (err) return null;
 
-  channel.sendToQueue(this.routingKey || this.queueName, new Buffer(options.formatter.serialize(event)), options, cb);
+    self.sendChannel.sendToQueue(self.routingKey || self.queueName, new Buffer(content), options);
+  });
 
 };
 
