@@ -15,10 +15,13 @@ function Queue(options) {
   });
 
   this.ack = (options.ack || options.acknowledge);
+  this.assertQueue = (options.assertQueue === undefined) ? true : options.assertQueue;
   this.bus = options.bus;
+  this.confirmChannel = options.confirmChannel;
   this.errorQueueName = options.queueName + '.error';
   this.formatter = options.formatter;
   this.initialized = false;
+  this.listening = false;
   this.listenChannel = options.listenChannel;
   this.log = options.log;
   this.maxRetries = options.maxRetries || 3;
@@ -29,6 +32,8 @@ function Queue(options) {
   this.sendChannel = options.sendChannel;
 
   EventEmitter.call(this);
+
+  this.setMaxListeners(Infinity);
 
   var self = this;
 
@@ -69,8 +74,8 @@ Queue.prototype.listen = function listen(callback, options) {
 
   this.listenChannel.consume(this.queueName, function (message) {
     /*
-        Note from http://www.squaremobius.net/amqp.node/doc/channel_api.html 
-        & http://www.rabbitmq.com/consumer-cancel.html: 
+        Note from http://www.squaremobius.net/amqp.node/doc/channel_api.html
+        & http://www.rabbitmq.com/consumer-cancel.html:
 
         If the consumer is cancelled by RabbitMQ, the message callback will be invoked with null.
       */
@@ -100,7 +105,9 @@ Queue.prototype.listen = function listen(callback, options) {
     });
   }, { noAck: !self.ack })
     .then(function (ok) {
+      self.listening = true;
       self.subscription = { consumerTag: ok.consumerTag };
+      self.emit('listening');
     });
 
 };
@@ -123,14 +130,14 @@ Queue.prototype.unlisten = function unlisten() {
   var em = new EventEmitter();
   var self = this;
 
-  if (this.subscription) {
+  if (this.listening) {
     this.listenChannel.cancel(this.subscription.consumerTag)
       .then(function (err, ok) {
         delete self.subscription;
         em.emit('success');
       });
   } else {
-    throw new Error('Attempted to unlisten a queue that is not yet listening.');
+    this.on('listening', unlisten.bind(this));
   }
 
   return em;

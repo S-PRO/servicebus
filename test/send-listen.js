@@ -1,6 +1,8 @@
 var noop = function () {};
 var log = require('debug')('servicebus:test');
 var bus = require('./bus-shim').bus;
+var confirmBus = require('./bus-confirm-shim').bus;
+var sinon = require('sinon');
 var util = require('util');
 
 describe('servicebus', function(){
@@ -60,7 +62,7 @@ describe('servicebus', function(){
       setTimeout(function () {
         for(var i = 0; i <= endCount; ++i) {
           bus.send('my.event.3', { my: 'event' });
-        };
+        }
       }, 100);
     });
 
@@ -72,7 +74,7 @@ describe('servicebus', function(){
           bus.destroyListener('my.event.4').on('success', function () {
             done();
           });
-        } 
+        }
       }, 10);
       bus.listen('my.event.4', { ack: true }, function (event) {
         count++;
@@ -86,53 +88,65 @@ describe('servicebus', function(){
       }, 10);
     });
 
-  //   it('allows routing based on routingKey, on same named queue', function (done){
-  //     var count = 0;
-  //     var interval = setInterval(function checkDone () {
-  //       if (count === 4) {
-  //         clearInterval(interval);
-  //         bus.destroyListener('my.event.routingKey').on('success', function () {
-  //           done();
-  //         });
-  //       } 
-  //     }, 10);
-  //     bus.listen('my.event.routingKey.1', { ack: true }, function (event) {
-  //       count++;
-  //       event.handle.ack();
-  //     });
-  //     bus.listen('my.event.routingKey.2', { ack: true }, function (event) {
-  //       count++;
-  //       event.handle.ack();
-  //     });
-  //     bus.listen('my.event.routingKey.3', { ack: true }, function (event) {
-  //       count++;
-  //       event.handle.ack();
-  //     });
-  //     bus.listen('my.event.routingKey.4', { ack: true }, function (event) {
-  //       count++;
-  //       event.handle.ack();
-  //     });
-  //     setTimeout(function () {
-  //       bus.send({ queueName: 'my.event.routingKey', routingKey: 'my.event.routingKey.1' }, { my: 'event1' });
-  //       bus.send({ queueName: 'my.event.routingKey', routingKey: 'my.event.routingKey.2' }, { my: 'event2' });
-  //       bus.send({ queueName: 'my.event.routingKey', routingKey: 'my.event.routingKey.3' }, { my: 'event3' });
-  //       bus.send({ queueName: 'my.event.routingKey', routingKey: 'my.event.routingKey.4' }, { my: 'event4' });
-  //     }, 10);
-  //   });
-    
+    it('should use callback in confirm mode', function (done) {
+      confirmBus.send('my.event.19', { my: 'event' }, {}, function (err, ok) {
+        done(err);
+      });
+    });
+
+    it('should use callback in confirm mode with options supplied', function (done) {
+      confirmBus.send('my.event.19', { my: 'event' }, function (err, ok) {
+        done(err);
+      });
+    });
+
+    it('should throw error when using callback and not confirmsEnabled', function (done) {
+      bus.send('my.event.15', { my: 'event' }, function (err, ok) {
+        err.should.not.eql(null);
+        err.message.should.eql('callbacks only supported when created with bus({ enableConfirms:true })');
+        done();
+      });
+    });
+
+    it('should allow ack:true and autodelete:true for sends', function (done) {
+      var expectation = sinon.mock();
+      bus.listen('my.event.25', { ack: true, autoDelete: true }, function () {
+        expectation();
+      });
+      setTimeout(function () {
+        bus.send('my.event.25', {}, {ack: true});
+        setTimeout(function () {
+          bus.unlisten('my.event.25').on('success', function () {
+            setTimeout(function () {
+              expectation.callCount.should.eql(1);
+              bus.destroyListener('my.event.25', { force: true }).on('success', function () {
+                done();
+              });
+            }, 100);
+          });
+        }, 100);
+      }, 100);
+    });
+
   });
 
   describe('#unlisten', function() {
 
     it('should cause message to not be received by listen', function (done){
-      bus.listen('my.event.17', function (event) { 
-        done(new Error('should not receive events after unlisten'));
+      var completed = false;
+      function tryDone () {
+        if (completed) return true;
+        completed = true;
+        done();
+      }
+      bus.listen('my.event.17', function (event) {
+        tryDone(new Error('should not receive events after unlisten'));
       });
       setTimeout(function () {
         bus.unlisten('my.event.17').on('success', function () {
           bus.send('my.event.17', { test: 'data'});
           setTimeout(function () {
-            done();
+            tryDone();
           }, 100);
         });
       }, 1500);
@@ -143,21 +157,23 @@ describe('servicebus', function(){
   describe('#destroyListener', function() {
 
     it('should cause message to not be received by listen', function (done){
-      bus.listen('my.event.18', { ack: true }, function (event) { 
+      var completed = false;
+      function tryDone () {
+        if (completed) return true;
+        completed = true;
+        done();
+      }
+      bus.listen('my.event.18', { ack: true }, function (event) {
         event.handle.ack();
-        // commence ugliest hack ever to get around rabbitmq queue consumer rules
-        setTimeout(function () {
-          done(new Error('should not receive events after destroy'));
-        }, 500);
+        tryDone(new Error('should not receive events after destroy'));
       });
-      setTimeout(function () {
+      // setTimeout(function () {
         bus.destroyListener('my.event.18').on('success', function () {
           bus.send('my.event.18', { test: 'data'}, { ack: true, expiration: 100 });
-          setTimeout(done, 100);
+          setTimeout(tryDone, 100);
         });
-      }, 1500);
+      // }, 1500);
     });
 
   });
-
-})
+});

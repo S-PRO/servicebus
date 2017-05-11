@@ -24,12 +24,14 @@ function PubSubQueue(options) {
 
   this.ack = (options.ack || options.acknowledge);
   this.bus = options.bus;
+  this.confirmChannel = options.confirmChannel;
   this.correlator = options.correlator;
   this.errorQueueName = options.queueName + '.error';
-  this.exchangeName = options.exchangeName || 'amq.topic';
+  this.exchangeName = options.exchangeName || this.bus.exchangeName || 'amq.topic';
   this.exchangeOptions = exchangeOptions;
   this.formatter = options.formatter;
   this.initialized = false;
+  this.listening = false;
   this.listenChannel = options.listenChannel;
   this.log = options.log;
   this.maxRetries = options.maxRetries || 3;
@@ -41,6 +43,14 @@ function PubSubQueue(options) {
 
   this.log('asserting exchange %s', this.exchangeName);
   this.sendChannel.assertExchange(this.exchangeName, this.exchangeOptions.type || 'topic', this.exchangeOptions);
+
+  if (this.confirmChannel) {
+    this.confirmChannel.assertExchange(this.exchangeName, this.exchangeOptions.type || 'topic', this.exchangeOptions);
+  }
+
+  events.EventEmitter.call(this);
+
+  this.setMaxListeners(Infinity);
 }
 
 PubSubQueue.prototype.publish = function publish(event, options) {
@@ -56,6 +66,10 @@ PubSubQueue.prototype.publish = function publish(event, options) {
 
 PubSubQueue.prototype.subscribe = function subscribe(options, callback) {
   var self = this;
+  var subscribed = false;
+  var subscription = null;
+
+  this.log('subscribing to queue %j with routingKey %j', this.queueName, this.routingKey);
 
   function _unsubscribe(cb) {
     self.listenChannel.cancel(self.subscription.consumerTag, cb);
@@ -64,8 +78,8 @@ PubSubQueue.prototype.subscribe = function subscribe(options, callback) {
   function _subscribe(uniqueName) {
     self.listenChannel.consume(uniqueName, function (message) {
       /*
-          Note from http://www.squaremobius.net/amqp.node/doc/channel_api.html 
-          & http://www.rabbitmq.com/consumer-cancel.html: 
+          Note from http://www.squaremobius.net/amqp.node/doc/channel_api.html
+          & http://www.rabbitmq.com/consumer-cancel.html:
 
           If the consumer is cancelled by RabbitMQ, the message callback will be invoked with null.
         */
@@ -96,7 +110,9 @@ PubSubQueue.prototype.subscribe = function subscribe(options, callback) {
       });
     }, { noAck: !self.ack })
       .then(function (ok) {
-        self.subscription = { consumerTag: ok.consumerTag };
+        subscribed = true;
+        subscription = { consumerTag: ok.consumerTag };
+        self.emit('subscribed');
       });
   }
 
