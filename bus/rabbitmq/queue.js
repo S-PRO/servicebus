@@ -78,9 +78,8 @@ Queue.prototype.listen = function listen(callback, options) {
       return;
     }
     options.formatter.deserialize(message.content, function (err, content) {
-      if (err) return callback(err);
 
-      message.content = content;
+      message.content = { error: err };
       options.queueType = 'queue';
 
       self.bus.handleIncoming(self.listenChannel, message, options, function (channel, message, options) {
